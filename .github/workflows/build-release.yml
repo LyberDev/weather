@@ -24,6 +24,7 @@ jobs:
           architecture: ${{ matrix.arch }}
 
       - name: Install dependencies and PyInstaller (PowerShell)
+        shell: pwsh
         run: |
           python -m pip install --upgrade pip
           if (Test-Path requirements.txt) {
@@ -34,31 +35,41 @@ jobs:
             if (Test-Path requirements.txt) { pip install -r requirements.txt }
           }
           pip install pyinstaller
-        shell: pwsh
 
       - name: Build with PyInstaller (PowerShell)
+        shell: pwsh
         env:
           INPUT_PATH: weather.py
         run: |
           pyinstaller --noconfirm --onefile --name weather $env:INPUT_PATH
-          if ($env:RUNNER_OS -eq 'Windows' -and '${{ matrix.arch }}' -eq 'x86') {
-            if (Test-Path dist\weather.exe) { Rename-Item -Path dist\weather.exe -NewName dist\weather-win32.exe }
+
+          # безопасно переименовать для x86 сборки (если требуется)
+          if ('${{ matrix.arch }}' -eq 'x86') {
+            $src = Join-Path -Path "$PWD" -ChildPath "dist\weather.exe"
+            $dst = Join-Path -Path "$PWD" -ChildPath "dist\weather-win32.exe"
+            if (Test-Path $src) {
+              if (Test-Path $dst) { Remove-Item -Path $dst -Force }
+              Move-Item -Path $src -Destination $dst
+              Write-Host "Renamed $src -> $dst"
+            } else {
+              Write-Host "Source executable not found: $src"
+              ls dist | Write-Host
+              exit 1
+            }
           }
+
+      - name: List dist for debug
         shell: pwsh
+        run: |
+          Write-Host "Contents of dist:"
+          Get-ChildItem -Path dist -Force | ForEach-Object { Write-Host $_.FullName }
 
-      - name: Upload artifact (x64)
-        if: matrix.arch == 'x64'
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: weather-windows-x64
-          path: dist/weather.exe
-
-      - name: Upload artifact (x86)
-        if: matrix.arch == 'x86'
-        uses: actions/upload-artifact@v4
-        with:
-          name: weather-windows-x86
-          path: dist/weather-win32.exe
+          name: weather-windows-${{ matrix.arch }}
+          path: |
+            dist/*.exe
 
   build-linux:
     name: Build Linux binary (tar.gz)
