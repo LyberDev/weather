@@ -1,4 +1,4 @@
-name: Build release (AppImage + Windows .exe x64/x86)
+name: Build release (Linux tar.gz + Windows .exe x64/x86)
 
 on:
   workflow_dispatch: {}
@@ -12,6 +12,7 @@ jobs:
     strategy:
       matrix:
         arch: [x64, x86]
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,41 +23,45 @@ jobs:
           python-version: '3.11'
           architecture: ${{ matrix.arch }}
 
-      - name: Install dependencies and PyInstaller
-        shell: bash
+      - name: Install dependencies and PyInstaller (PowerShell)
         run: |
           python -m pip install --upgrade pip
-          # Prefer existing requirements.txt; otherwise try to generate it
-          if [ -f requirements.txt ]; then
+          if (Test-Path requirements.txt) {
             pip install -r requirements.txt
-          else
-            pip install pipreqs || true
-            pipreqs --force . || true
-            if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          fi
+          } else {
+            pip install pipreqs || exit 0
+            pipreqs --force . || exit 0
+            if (Test-Path requirements.txt) { pip install -r requirements.txt }
+          }
           pip install pyinstaller
+        shell: pwsh
 
-      - name: Build with PyInstaller
-        shell: bash
+      - name: Build with PyInstaller (PowerShell)
         env:
           INPUT_PATH: weather.py
         run: |
-          pyinstaller --noconfirm --onefile --name weather "$INPUT_PATH"
-          # Для 32-bit переименуем артефакт
-          if [ "${{ matrix.arch }}" = "x86" ]; then
-            if [ -f dist/weather.exe ]; then mv dist/weather.exe dist/weather-win32.exe; fi
-          fi
+          pyinstaller --noconfirm --onefile --name weather $env:INPUT_PATH
+          if ($env:RUNNER_OS -eq 'Windows' -and '${{ matrix.arch }}' -eq 'x86') {
+            if (Test-Path dist\weather.exe) { Rename-Item -Path dist\weather.exe -NewName dist\weather-win32.exe }
+          }
+        shell: pwsh
 
-      - name: Upload Windows artifact
+      - name: Upload artifact (x64)
+        if: matrix.arch == 'x64'
         uses: actions/upload-artifact@v4
         with:
-          name: weather-windows-${{ matrix.arch }}
-          path: |
-            dist/weather.exe
-            dist/weather-win32.exe
+          name: weather-windows-x64
+          path: dist/weather.exe
 
-  build-linux-appimage:
-    name: Build AppImage (Linux)
+      - name: Upload artifact (x86)
+        if: matrix.arch == 'x86'
+        uses: actions/upload-artifact@v4
+        with:
+          name: weather-windows-x86
+          path: dist/weather-win32.exe
+
+  build-linux:
+    name: Build Linux binary (tar.gz)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -85,45 +90,21 @@ jobs:
           pyinstaller --noconfirm --onefile --name weather weather.py
         shell: bash
 
-      - name: Download linuxdeploy and appimagetool
+      - name: Package linux binary (tar.gz)
         run: |
-          wget -q -O linuxdeploy.AppImage https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          chmod +x linuxdeploy.AppImage || true
-          wget -q -O linuxdeploy-plugin-python.AppImage https://github.com/linuxdeploy/linuxdeploy-plugin-python/releases/download/continuous/linuxdeploy-plugin-python-x86_64.AppImage
-          chmod +x linuxdeploy-plugin-python.AppImage || true
-          wget -q -O appimagetool.AppImage https://github.com/AppImage/AppImageKit/releases/latest/download/appimagetool-x86_64.AppImage
-          chmod +x appimagetool.AppImage || true
-        shell: bash
-
-      - name: Create AppDir and bundle AppImage
-        run: |
-          set -e
-          mkdir -p AppDir/usr/bin
-          cp -v dist/weather AppDir/usr/bin/weather || true
-
-          mkdir -p AppDir/usr/share/applications
-          cat > AppDir/usr/share/applications/weather.desktop <<EOF
-          [Desktop Entry]
-          Type=Application
-          Name=Weather
-          Exec=weather
-          Icon=weather
-          EOF
-
-          ./linuxdeploy.AppImage --appdir AppDir --output appimage || true
-
-          if ls *.AppImage 1> /dev/null 2>&1; then
-            for f in *.AppImage; do mv "$f" weather.AppImage || true; done
+          mkdir -p out
+          if [ -f dist/weather ]; then
+            cp dist/weather out/weather
+            tar -czf out/weather-linux.tar.gz -C out weather
+          else
+            ls -la dist || true
+            echo "dist/weather not found" >&2
+            exit 1
           fi
         shell: bash
 
-      - name: Upload AppImage artifact
+      - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
-          name: weather-linux-appimage
-          path: weather.AppImage
-
-# Примечания:
-# - Скрипт пытается установить зависимости из requirements.txt. Если его нет — пробует сгенерировать через pipreqs.
-# - PyInstaller используется для сборки одного исполняемого файла. Для AppImage используется linuxdeploy + appimagetool; в некоторых случаях может потребоваться доработка (иконка, дополнительные libs).
-# - Артефакты будут доступны в Actions -> выбранный run -> Artifacts.
+          name: weather-linux-tar
+          path: out/weather-linux.tar.gz
